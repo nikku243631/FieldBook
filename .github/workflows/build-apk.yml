@@ -1,6 +1,6 @@
 name: Build FieldBook APK
 
-on:
+'on':
 push:
 branches:
 - main
