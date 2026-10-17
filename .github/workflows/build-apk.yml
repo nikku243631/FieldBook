@@ -1,119 +1,114 @@
 name: Build FieldBook APK
 
 'on':
-workflow_dispatch:
-push:
-branches:
-- main
-- master
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    tags-ignore:
+      - '*'
+  pull_request:
+    branches:
+      - main
+      - master
 
 permissions:
-contents: read
+  contents: write
 
 jobs:
-build-apk:
-name: Build Android APK
-runs-on: ubuntu-latest
+  build-apk:
+    name: Build FieldBook Android Debug APK
+    runs-on: ubuntu-latest
 
-steps:
-  - name: Checkout repository
-    uses: actions/checkout@v4
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-  - name: Extract project ZIP
-    shell: bash
-    run: |
-      set -euo pipefail
+      - name: Extract FieldBook-Complete-GitHub-APK.zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f "package.json" ]; then
+            ZIP_FILE=""
+            if [ -f "FieldBook-Complete-GitHub-APK.zip" ]; then
+              ZIP_FILE="FieldBook-Complete-GitHub-APK.zip"
+            else
+              ZIP_FILE="$(find . -maxdepth 1 -type f -name '*.zip' | head -n 1 || true)"
+            fi
+            if [ -z "$ZIP_FILE" ]; then
+              echo "ERROR: FieldBook-Complete-GitHub-APK.zip not found in repo root!"
+              exit 1
+            fi
+            rm -rf _extracted_zip
+            mkdir -p _extracted_zip
+            unzip -q "$ZIP_FILE" -d _extracted_zip
+            PKG_JSON="$(find _extracted_zip -type f -name 'package.json' -not -path '*/node_modules/*' | head -n 1 || true)"
+            SRC_ROOT="$(dirname "$PKG_JSON")"
+            rm -rf "$SRC_ROOT/.github"
+            cp -a "$SRC_ROOT"/. .
+            rm -rf _extracted_zip
+          fi
+          test -f package.json
+          test -f package-lock.json
+          test -f android/gradlew
+          test -f android/settings.gradle
+          test -f src/utils/zipExporter.ts
 
-      ZIP="$GITHUB_WORKSPACE/FieldBook-Complete-GitHub-APK.zip"
-      if [ ! -f "$ZIP" ]; then
-        echo "ERROR: ZIP not found in repository root."
-        ls -la "$GITHUB_WORKSPACE"
-        exit 1
-      fi
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
 
-      mkdir -p "$RUNNER_TEMP/fieldbook"
-      unzip -q "$ZIP" -d "$RUNNER_TEMP/fieldbook"
+      - name: Setup Java JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
 
-      GRADLEW="$(find "$RUNNER_TEMP/fieldbook" -type f -path '*/android/gradlew' -print -quit)"
-      if [ -z "$GRADLEW" ]; then
-        echo "ERROR: android/gradlew not found inside ZIP."
-        find "$RUNNER_TEMP/fieldbook" -maxdepth 5 -type f | head -100
-        exit 1
-      fi
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
-      ANDROID_DIR="$(dirname "$GRADLEW")"
-      PROJECT_DIR="$(dirname "$ANDROID_DIR")"
+      - name: Install Dependencies
+        run: npm ci
 
-      if [ ! -f "$PROJECT_DIR/package.json" ]; then
-        echo "ERROR: package.json not found beside Android project."
-        find "$RUNNER_TEMP/fieldbook" -maxdepth 5 -name package.json
-        exit 1
-      fi
+      - name: TypeScript Validation
+        run: npm run lint
 
-      if [ ! -f "$PROJECT_DIR/package-lock.json" ]; then
-        echo "ERROR: package-lock.json missing."
-        exit 1
-      fi
+      - name: Run Verification Tests
+        run: npm run test
 
-      echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-      echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
+      - name: Build Web Application
+        run: npm run build
 
-  - name: Setup Node.js
-    uses: actions/setup-node@v4
-    with:
-      node-version: '22'
+      - name: Sync Capacitor Android
+        run: npx cap sync android
 
-  - name: Setup Java
-    uses: actions/setup-java@v4
-    with:
-      distribution: temurin
-      java-version: '17'
+      - name: Build Android Debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+          test -s app/build/outputs/apk/debug/app-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/FieldBook-Kisan-App.apk"
+          ls -lh "$GITHUB_WORKSPACE/FieldBook-Kisan-App.apk"
 
-  - name: Setup Android SDK
-    uses: android-actions/setup-android@v3
+      - name: Upload FieldBook-Kisan-App-APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FieldBook-Kisan-App-APK
+          path: FieldBook-Kisan-App.apk
+          if-no-files-found: error
+          retention-days: 30
 
-  - name: Install dependencies
-    shell: bash
-    run: |
-      set -euo pipefail
-      cd "$PROJECT_DIR"
-      npm ci
-
-  - name: Build web application
-    shell: bash
-    run: |
-      set -euo pipefail
-      cd "$PROJECT_DIR"
-      npm run build
-
-  - name: Sync Capacitor Android
-    shell: bash
-    run: |
-      set -euo pipefail
-      cd "$PROJECT_DIR"
-      npx cap sync android
-
-  - name: Build debug APK
-    shell: bash
-    run: |
-      set -euo pipefail
-      cd "$ANDROID_DIR"
-      chmod +x gradlew
-      ./gradlew assembleDebug --no-daemon --stacktrace
-
-      APK="$ANDROID_DIR/app/build/outputs/apk/debug/app-debug.apk"
-      if [ ! -s "$APK" ]; then
-        echo "ERROR: APK was not generated."
-        exit 1
-      fi
-
-      cp "$APK" "$GITHUB_WORKSPACE/FieldBook-Kisan-App.apk"
-      ls -lh "$GITHUB_WORKSPACE/FieldBook-Kisan-App.apk"
-
-  - name: Upload APK artifact
-    uses: actions/upload-artifact@v4
-    with:
-      name: FieldBook-Kisan-App-APK
-      path: FieldBook-Kisan-App.apk
-      if-no-files-found: error
-      retention-days: 14
+      - name: Publish APK to GitHub Releases
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-apk
+          name: "FieldBook Android App (v2.4.0 Debug APK)"
+          fail_on_unmatched_files: true
+          files: FieldBook-Kisan-App.apk
+          prerelease: false
