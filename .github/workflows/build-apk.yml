@@ -1,11 +1,111 @@
-name: FieldBook APK Test
+name: Build FieldBook APK
 
 'on':
-  workflow_dispatch:
+workflow_dispatch:
+push:
+branches:
+- main
+- master
+
+permissions:
+contents: read
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Verify workflow
-        run: echo "YAML is valid"
+build-apk:
+name: Build FieldBook Android APK
+runs-on: ubuntu-latest
+
+steps:
+  - name: Checkout repository
+    uses: actions/checkout@v4
+
+  - name: Extract FieldBook project
+    shell: bash
+    run: |
+      set -euo pipefail
+
+      ZIP_FILE="$GITHUB_WORKSPACE/FieldBook-Complete-GitHub-APK.zip"
+      test -f "$ZIP_FILE"
+
+      mkdir -p "$RUNNER_TEMP/fieldbook"
+      unzip -q "$ZIP_FILE" -d "$RUNNER_TEMP/fieldbook"
+
+      test -f "$RUNNER_TEMP/fieldbook/package.json"
+      test -f "$RUNNER_TEMP/fieldbook/package-lock.json"
+      test -f "$RUNNER_TEMP/fieldbook/android/gradlew"
+      test -f "$RUNNER_TEMP/fieldbook/android/settings.gradle"
+
+      echo "PROJECT_DIR=$RUNNER_TEMP/fieldbook" >> "$GITHUB_ENV"
+      echo "ANDROID_DIR=$RUNNER_TEMP/fieldbook/android" >> "$GITHUB_ENV"
+
+  - name: Setup Node.js
+    uses: actions/setup-node@v4
+    with:
+      node-version: '22'
+
+  - name: Setup Java
+    uses: actions/setup-java@v4
+    with:
+      distribution: temurin
+      java-version: '17'
+
+  - name: Setup Android SDK
+    uses: android-actions/setup-android@v3
+
+  - name: Install dependencies
+    shell: bash
+    run: |
+      set -euo pipefail
+      cd "$PROJECT_DIR"
+      npm ci
+
+  - name: TypeScript validation
+    shell: bash
+    run: |
+      set -euo pipefail
+      cd "$PROJECT_DIR"
+      npm run lint
+
+  - name: Run project tests
+    shell: bash
+    run: |
+      set -euo pipefail
+      cd "$PROJECT_DIR"
+      npm test
+
+  - name: Build web application
+    shell: bash
+    run: |
+      set -euo pipefail
+      cd "$PROJECT_DIR"
+      npm run build
+
+  - name: Sync Capacitor
+    shell: bash
+    run: |
+      set -euo pipefail
+      cd "$PROJECT_DIR"
+      npx cap sync android
+
+  - name: Build Android APK
+    shell: bash
+    run: |
+      set -euo pipefail
+      cd "$ANDROID_DIR"
+
+      chmod +x gradlew
+      ./gradlew assembleDebug --no-daemon --stacktrace
+
+      APK="$ANDROID_DIR/app/build/outputs/apk/debug/app-debug.apk"
+      test -s "$APK"
+
+      cp "$APK" "$GITHUB_WORKSPACE/FieldBook-Kisan-App.apk"
+      ls -lh "$GITHUB_WORKSPACE/FieldBook-Kisan-App.apk"
+
+  - name: Upload APK artifact
+    uses: actions/upload-artifact@v4
+    with:
+      name: FieldBook-Kisan-App-APK
+      path: FieldBook-Kisan-App.apk
+      if-no-files-found: error
+      retention-days: 14
