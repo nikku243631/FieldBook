@@ -11,52 +11,69 @@ permissions:
 contents: read
 
 jobs:
-build-apk:
-name: Build Android APK
+build:
 runs-on: ubuntu-latest
 
 steps:
-  - name: Checkout repository
+  - name: Checkout
     uses: actions/checkout@v4
 
-  - name: Extract uploaded project ZIP
-    shell: bash
+  - name: Extract project ZIP
     run: |
-      set -euo pipefail
+      set -e
       test -f FieldBook-Complete-GitHub-APK.zip
-      mkdir project
+      mkdir -p project
       unzip -q FieldBook-Complete-GitHub-APK.zip -d project
+      test -f project/package.json
+      test -f project/package-lock.json
+      test -f project/android/gradlew
+      test -f project/android/settings.gradle
 
-      GRADLEW="$(find "$GITHUB_WORKSPACE/project" -type f -path '*/android/gradlew' -print -quit)"
-      if [ -z "$GRADLEW" ]; then
-        echo "ERROR: Android Gradle Wrapper not found in uploaded ZIP."
-        find project -maxdepth 4 -type f | head -100
-        exit 1
-      fi
+  - name: Setup Node
+    uses: actions/setup-node@v4
+    with:
+      node-version: '22'
+      cache: npm
+      cache-dependency-path: project/package-lock.json
 
-      echo "ANDROID_DIR=$(dirname "$GRADLEW")" >> "$GITHUB_ENV"
-
-  - name: Set up Java
+  - name: Setup Java
     uses: actions/setup-java@v4
     with:
       distribution: temurin
-      java-version: '17'
+      java-version: '21'
 
-  - name: Set up Android SDK
+  - name: Setup Android SDK
     uses: android-actions/setup-android@v3
 
-  - name: Build debug APK
-    shell: bash
+  - name: Install dependencies
+    working-directory: project
+    run: npm ci
+
+  - name: TypeScript check
+    working-directory: project
+    run: npm run lint
+
+  - name: Run tests
+    working-directory: project
+    run: npm run test
+
+  - name: Build web app
+    working-directory: project
+    run: npm run build
+
+  - name: Sync Capacitor
+    working-directory: project
+    run: npx cap sync android
+
+  - name: Build APK
+    working-directory: project/android
     run: |
-      set -euo pipefail
-      cd "$ANDROID_DIR"
       chmod +x gradlew
       ./gradlew assembleDebug --no-daemon
       test -s app/build/outputs/apk/debug/app-debug.apk
       cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/FieldBook-Kisan-App.apk"
-      ls -lh "$GITHUB_WORKSPACE/FieldBook-Kisan-App.apk"
 
-  - name: Upload installable APK
+  - name: Upload APK
     uses: actions/upload-artifact@v4
     with:
       name: FieldBook-Kisan-App-APK
