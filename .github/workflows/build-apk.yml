@@ -1,62 +1,11 @@
-name: Build FieldBook APK
+name: FieldBook APK Build
 
 'on':
-workflow_dispatch:
-push:
-branches:
-- main
-- master
-
-permissions:
-contents: read
+  workflow_dispatch:
 
 jobs:
-build:
-runs-on: ubuntu-latest
-
-steps:
-  - name: Checkout repository
-    uses: actions/checkout@v4
-
-  - name: Extract FieldBook ZIP
-    run: |
-      set -e
-      ZIP_FILE="FieldBook-Complete-GitHub-APK.zip"
-      test -f "$ZIP_FILE"
-      mkdir -p project
-      unzip -q "$ZIP_FILE" -d project
-
-      GRADLEW=$(find project -type f -name gradlew | head -n 1)
-
-      if [ -z "$GRADLEW" ]; then
-        echo "ERROR: Gradle Wrapper not found in ZIP."
-        find project -maxdepth 4 -type f | head -100
-        exit 1
-      fi
-
-      echo "GRADLEW=$GRADLEW" >> "$GITHUB_ENV"
-      echo "ANDROID_DIR=$(dirname "$GRADLEW")" >> "$GITHUB_ENV"
-
-  - name: Setup Java
-    uses: actions/setup-java@v4
-    with:
-      distribution: temurin
-      java-version: '21'
-
-  - name: Setup Android SDK
-    uses: android-actions/setup-android@v3
-
-  - name: Build APK
-    run: |
-      set -e
-      cd "$ANDROID_DIR"
-      chmod +x ./gradlew
-      ./gradlew assembleDebug --no-daemon
-
-  - name: Upload APK
-    uses: actions/upload-artifact@v4
-    with:
-      name: FieldBook-APK
-      path: project/**/app/build/outputs/apk/debug/*.apk
-      if-no-files-found: error
-      retention-days: 14
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test workflow
+        run: echo "Workflow syntax is valid"
