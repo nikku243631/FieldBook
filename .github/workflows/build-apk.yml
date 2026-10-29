@@ -156,7 +156,15 @@ jobs:
       - name: Synchronize Capacitor Android Project
         run: npx cap sync android
 
-      - name: Prepare Optional Release Keystore (from GitHub Secrets if configured)
+      - name: Restore Persistent Fallback Signing Keystore Cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: fieldbook-android-signing-keystore-v1
+          restore-keys: |
+            fieldbook-android-signing-keystore-
+
+      - name: Configure Signing Keystore (GitHub Secrets or Persistent Cached Keystore)
         id: keystore
         shell: bash
         env:
@@ -167,22 +175,37 @@ jobs:
         run: |
           set -euo pipefail
           if [ -n "$KEYSTORE_B64" ] && [ -n "$KEYSTORE_PASS" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASS" ]; then
-            echo "Release signing secrets detected. Decoding temporary keystore outside repository..."
+            echo "Release signing secrets detected in GitHub Secrets. Decoding keystore to temporary runner storage..."
             KS_FILE="$RUNNER_TEMP/fieldbook-release-signing.jks"
             echo "$KEYSTORE_B64" | tr -d ' \t\r\n' | base64 --decode > "$KS_FILE"
             chmod 600 "$KS_FILE"
+            keytool -list -keystore "$KS_FILE" -storepass "$KEYSTORE_PASS" > /dev/null
             echo "FIELDBOOK_KEYSTORE_PATH=$KS_FILE" >> "$GITHUB_ENV"
             echo "FIELDBOOK_KEYSTORE_PASSWORD=$KEYSTORE_PASS" >> "$GITHUB_ENV"
             echo "FIELDBOOK_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
             echo "FIELDBOOK_KEY_PASSWORD=$KEY_PASS" >> "$GITHUB_ENV"
             echo "signed_release=true" >> "$GITHUB_OUTPUT"
           else
-            echo "No release signing secrets configured in GitHub Settings -> Secrets."
-            echo "Will build installable Debug APK (assembleDebug) + Unsigned Release APK (assembleRelease)."
+            echo "No custom release secrets found in GitHub Settings -> Secrets."
+            mkdir -p ~/.android
+            if [ ! -f ~/.android/debug.keystore ]; then
+              echo "Generating persistent debug.keystore to be cached across future workflow runs..."
+              keytool -genkeypair -v \
+                -keystore ~/.android/debug.keystore \
+                -storepass android \
+                -alias androiddebugkey \
+                -keypass android \
+                -keyalg RSA \
+                -keysize 2048 \
+                -validity 10000 \
+                -dname "CN=Android Debug,O=Android,C=US"
+            else
+              echo "Reusing cached ~/.android/debug.keystore so APK signature remains identical across updates."
+            fi
             echo "signed_release=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build & Verify Android APKs
+      - name: Auto-Increment Android Version Code & Build Signed APK
         shell: bash
         run: |
           set -euo pipefail
@@ -190,45 +213,47 @@ jobs:
           sed -i 's/\r$//' gradlew
           chmod +x gradlew
 
-          echo "=== 1. Building Installable Android APK (assembleDebug) ==="
-          ./gradlew assembleDebug --no-daemon --stacktrace
-          test -s app/build/outputs/apk/debug/app-debug.apk || { echo "ERROR: Debug APK was not created or is empty."; exit 1; }
-          cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/FieldBook-Kisan-App-Debug.apk"
-          cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/FieldBook-Kisan-App.apk"
+          # Ensure versionCode strictly increases on every GitHub Actions build so Android allows in-place updates
+          NEW_VERSION_CODE=$((100 + ${GITHUB_RUN_NUMBER:-1}))
+          NEW_VERSION_NAME="2.5.${GITHUB_RUN_NUMBER:-1}"
+          export FIELDBOOK_VERSION_CODE="$NEW_VERSION_CODE"
+          export FIELDBOOK_VERSION_NAME="$NEW_VERSION_NAME"
+          echo "Building com.fieldbook.kisan with versionCode=$NEW_VERSION_CODE, versionName=$NEW_VERSION_NAME"
 
-          echo "=== 2. Building Android Release APK (assembleRelease) ==="
-          ./gradlew assembleRelease --no-daemon --stacktrace
-
-          if [ "${{ steps.keystore.outputs.signed_release }}" = "true" ] && [ -s app/build/outputs/apk/release/app-release.apk ]; then
-            cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/FieldBook-Kisan-App-Release-Signed.apk"
-            cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/FieldBook-Kisan-App.apk"
-            ./gradlew bundleRelease --no-daemon --stacktrace
-            if [ -s app/build/outputs/bundle/release/app-release.aab ]; then
-              cp app/build/outputs/bundle/release/app-release.aab "$GITHUB_WORKSPACE/FieldBook-Kisan-App-Release-Signed.aab"
-            fi
-          elif [ -s app/build/outputs/apk/release/app-release-unsigned.apk ]; then
-            cp app/build/outputs/apk/release/app-release-unsigned.apk "$GITHUB_WORKSPACE/FieldBook-Kisan-App-Release-Unsigned.apk"
+          if [ "${{ steps.keystore.outputs.signed_release }}" = "true" ]; then
+            echo "=== Building Release APK Signed with GitHub Secret Keystore (assembleRelease) ==="
+            ./gradlew assembleRelease --no-daemon --stacktrace
+            BUILT_APK="app/build/outputs/apk/release/app-release.apk"
+          else
+            echo "=== Building APK Signed with Persistent Cached Keystore (assembleDebug) ==="
+            ./gradlew assembleDebug --no-daemon --stacktrace
+            BUILT_APK="app/build/outputs/apk/debug/app-debug.apk"
           fi
 
-          # Final non-empty verification of primary installable APK
-          test -s "$GITHUB_WORKSPACE/FieldBook-Kisan-App.apk"
-          ls -lh "$GITHUB_WORKSPACE"/FieldBook-Kisan-App*.apk
+          test -s "$BUILT_APK" || { echo "ERROR: Signed APK was not created at $BUILT_APK"; exit 1; }
+          cp "$BUILT_APK" "$GITHUB_WORKSPACE/FieldBook-Kisan-App.apk"
 
-      - name: Clean Up Temporary Signing Keystore
+          # Verify APK signature schemes (V1/V2/V3) using Android SDK apksigner
+          APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          if [ -x "$APKSIGNER" ]; then
+            echo "Verifying APK signature certificate:"
+            "$APKSIGNER" verify --verbose --print-certs "$GITHUB_WORKSPACE/FieldBook-Kisan-App.apk"
+          fi
+
+          test -s "$GITHUB_WORKSPACE/FieldBook-Kisan-App.apk"
+          ls -lh "$GITHUB_WORKSPACE/FieldBook-Kisan-App.apk"
+
+      - name: Clean Up Temporary Secret Keystore
         if: always()
         shell: bash
         run: |
           rm -f "$RUNNER_TEMP/fieldbook-release-signing.jks"
 
-      - name: Upload FieldBook APK Artifacts
+      - name: Upload FieldBook APK Artifact (Single Signed APK)
         uses: actions/upload-artifact@v4
         with:
           name: FieldBook-Updated-APK
-          path: |
-            FieldBook-Kisan-App.apk
-            FieldBook-Kisan-App-Debug.apk
-            FieldBook-Kisan-App-Release-*.apk
-            FieldBook-Kisan-App-Release-*.aab
+          path: FieldBook-Kisan-App.apk
           if-no-files-found: error
           retention-days: 30
 
@@ -238,12 +263,8 @@ jobs:
         continue-on-error: true
         with:
           tag_name: latest-apk
-          name: "FieldBook Android App (v2.5.0)"
+          name: "FieldBook Android App (v2.5.${{ github.run_number }})"
           fail_on_unmatched_files: false
           files: |
             FieldBook-Kisan-App.apk
-            FieldBook-Kisan-App-Debug.apk
-            FieldBook-Kisan-App-Release-Signed.apk
-            FieldBook-Kisan-App-Release-Unsigned.apk
-            FieldBook-Kisan-App-Release-Signed.aab
           prerelease: false
