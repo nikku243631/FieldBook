@@ -147,7 +147,7 @@ jobs:
       - name: Run TypeScript Type & Lint Check
         run: npm run lint
 
-      - name: Run Automated Verification Tests (16 Suites)
+      - name: Run Automated Verification Tests (17 Suites)
         run: npm run test
 
       - name: Build Production Web Application
@@ -214,8 +214,8 @@ jobs:
           chmod +x gradlew
 
           # Ensure versionCode strictly increases on every GitHub Actions build so Android allows in-place updates
-          NEW_VERSION_CODE=$((100 + ${GITHUB_RUN_NUMBER:-1}))
-          NEW_VERSION_NAME="2.5.${GITHUB_RUN_NUMBER:-1}"
+          NEW_VERSION_CODE=$((200 + ${GITHUB_RUN_NUMBER:-1}))
+          NEW_VERSION_NAME="2.6.${GITHUB_RUN_NUMBER:-1}"
           export FIELDBOOK_VERSION_CODE="$NEW_VERSION_CODE"
           export FIELDBOOK_VERSION_NAME="$NEW_VERSION_NAME"
           echo "Building com.fieldbook.kisan with versionCode=$NEW_VERSION_CODE, versionName=$NEW_VERSION_NAME"
@@ -263,7 +263,7 @@ jobs:
         continue-on-error: true
         with:
           tag_name: latest-apk
-          name: "FieldBook Android App (v2.5.${{ github.run_number }})"
+          name: "FieldBook Android App (v2.6.${{ github.run_number }})"
           fail_on_unmatched_files: false
           files: |
             FieldBook-Kisan-App.apk
