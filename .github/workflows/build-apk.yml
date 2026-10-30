@@ -1,6 +1,6 @@
 name: Build FieldBook APK
 
-'on':
+on:
   workflow_dispatch:
   push:
     branches:
@@ -29,38 +29,72 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Prefer FieldBook-Updated-Source.zip if present; otherwise pick the latest uploaded .zip archive
-          if [ -f "./FieldBook-Updated-Source.zip" ]; then
-            ZIP_FILE="./FieldBook-Updated-Source.zip"
-          else
-            ZIP_FILE="$(find . -maxdepth 2 -type f -iname '*.zip' -not -path './.git/*' -not -path './node_modules/*' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n 1 | cut -d' ' -f2- || true)"
-          fi
+          EXTRACTED_OK="false"
 
-          if [ -n "${ZIP_FILE:-}" ] && [ -f "$ZIP_FILE" ]; then
-            echo "Found uploaded ZIP archive: $ZIP_FILE"
-            test -s "$ZIP_FILE" || { echo "ERROR: Uploaded ZIP file '$ZIP_FILE' is empty."; exit 1; }
-            echo "Validating ZIP integrity..."
-            unzip -t -q "$ZIP_FILE"
+          # Build candidate list: FieldBook-Updated-Source.zip first, then any other .zip files sorted newest-first
+          mapfile -t ZIP_CANDIDATES < <(
+            {
+              if [ -f "./FieldBook-Updated-Source.zip" ]; then
+                echo "./FieldBook-Updated-Source.zip"
+              fi
+              if [ -f "./fieldbook-updated-source.zip" ]; then
+                echo "./fieldbook-updated-source.zip"
+              fi
+              find . -maxdepth 2 -type f -iname '*.zip' -not -path './.git/*' -not -path './node_modules/*' -printf '%T@ %p\n' 2>/dev/null | sort -nr | cut -d' ' -f2- || true
+            } | awk '!seen[$0]++'
+          )
 
-            echo "Safely extracting '$ZIP_FILE'..."
+          for ZIP_FILE in "${ZIP_CANDIDATES[@]}"; do
+            [ -n "$ZIP_FILE" ] && [ -f "$ZIP_FILE" ] || continue
+            echo "Checking uploaded ZIP archive: $ZIP_FILE"
+            if [ ! -s "$ZIP_FILE" ]; then
+              echo "Skipping empty ZIP file: $ZIP_FILE"
+              continue
+            fi
+
+            if ! unzip -t -q "$ZIP_FILE" >/dev/null 2>&1; then
+              echo "Skipping invalid/corrupt archive: $ZIP_FILE"
+              continue
+            fi
+
             rm -rf _extracted_zip
             mkdir -p _extracted_zip
             unzip -q -o "$ZIP_FILE" -d _extracted_zip
 
-            PKG_JSON="$(find _extracted_zip -type f -name 'package.json' -not -path '*/node_modules/*' | head -n 1 || true)"
-            if [ -z "$PKG_JSON" ]; then
-              echo "ERROR: Could not locate package.json inside extracted ZIP archive."
-              exit 1
+            # If the user downloaded a wrapper archive (e.g. from Filebin), extract any nested .zip inside _extracted_zip
+            NESTED_ZIPS="$(find _extracted_zip -maxdepth 3 -type f -iname '*.zip' 2>/dev/null || true)"
+            if [ -n "$NESTED_ZIPS" ]; then
+              while IFS= read -r INNER_ZIP; do
+                [ -f "$INNER_ZIP" ] && [ -s "$INNER_ZIP" ] || continue
+                echo "Detected nested ZIP inside archive: $INNER_ZIP — extracting inner ZIP..."
+                unzip -q -o "$INNER_ZIP" -d _extracted_zip || true
+              done <<< "$NESTED_ZIPS"
             fi
 
-            SRC_ROOT="$(dirname "$PKG_JSON")"
-            echo "Detected project root inside archive: $SRC_ROOT"
-            rm -rf "$SRC_ROOT/.github"
-            cp -af "$SRC_ROOT"/. .
-            rm -rf _extracted_zip
-            echo "ZIP extraction completed successfully."
-          else
-            echo "No .zip archive found in repository root; building directly from checked-out source tree."
+            PKG_JSON="$(find _extracted_zip -type f -name 'package.json' -not -path '*/node_modules/*' | head -n 1 || true)"
+            if [ -n "$PKG_JSON" ]; then
+              SRC_ROOT="$(dirname "$PKG_JSON")"
+              echo "Found valid FieldBook project root inside '$ZIP_FILE' at: $SRC_ROOT"
+              rm -rf "$SRC_ROOT/.github"
+              cp -af "$SRC_ROOT"/. .
+              rm -rf _extracted_zip
+              EXTRACTED_OK="true"
+              echo "ZIP extraction completed successfully from: $ZIP_FILE"
+              break
+            else
+              echo "WARN: '$ZIP_FILE' did not contain package.json (contents listed below):"
+              unzip -l "$ZIP_FILE" || true
+              rm -rf _extracted_zip
+            fi
+          done
+
+          if [ "$EXTRACTED_OK" = "false" ]; then
+            if [ -f "package.json" ] && [ -f "android/gradlew" ]; then
+              echo "Using existing FieldBook source tree in repository root."
+            else
+              echo "ERROR: No valid FieldBook source ZIP containing package.json was found in the repository."
+              exit 1
+            fi
           fi
 
           # Verify essential project files exist before continuing
@@ -126,7 +160,6 @@ jobs:
           yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses > /dev/null || true
 
           # Install only valid modern Android SDK packages required by compileSdkVersion=35 / targetSdkVersion=35
-          # Note: Never request the obsolete 'tools' package which was removed in modern Android SDK repositories
           "$SDKMANAGER" --sdk_root="$SDK_ROOT" \
             "platform-tools" \
             "platforms;android-35" \
