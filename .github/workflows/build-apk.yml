@@ -160,6 +160,7 @@ jobs:
           yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses > /dev/null || true
 
           # Install only valid modern Android SDK packages required by compileSdkVersion=35 / targetSdkVersion=35
+          # Note: Never request the obsolete 'tools' package which was removed in modern Android SDK repositories
           "$SDKMANAGER" --sdk_root="$SDK_ROOT" \
             "platform-tools" \
             "platforms;android-35" \
@@ -180,7 +181,7 @@ jobs:
       - name: Run TypeScript Type & Lint Check
         run: npm run lint
 
-      - name: Run Automated Verification Tests (17 Suites)
+      - name: Run Automated Verification Tests (18 Suites)
         run: npm run test
 
       - name: Build Production Web Application
@@ -221,7 +222,12 @@ jobs:
           else
             echo "No custom release secrets found in GitHub Settings -> Secrets."
             mkdir -p ~/.android
-            if [ ! -f ~/.android/debug.keystore ]; then
+            if [ -f ~/.android/debug.keystore ]; then
+              echo "Reusing cached ~/.android/debug.keystore so APK signature remains identical across updates."
+            elif [ -f "android/app/fieldbook-signing.p12" ]; then
+              echo "Using committed deterministic repository keystore (android/app/fieldbook-signing.p12) so all builds share the exact same certificate..."
+              cp "android/app/fieldbook-signing.p12" ~/.android/debug.keystore
+            else
               echo "Generating persistent debug.keystore to be cached across future workflow runs..."
               keytool -genkeypair -v \
                 -keystore ~/.android/debug.keystore \
@@ -232,8 +238,6 @@ jobs:
                 -keysize 2048 \
                 -validity 10000 \
                 -dname "CN=Android Debug,O=Android,C=US"
-            else
-              echo "Reusing cached ~/.android/debug.keystore so APK signature remains identical across updates."
             fi
             echo "signed_release=false" >> "$GITHUB_OUTPUT"
           fi
@@ -247,8 +251,8 @@ jobs:
           chmod +x gradlew
 
           # Ensure versionCode strictly increases on every GitHub Actions build so Android allows in-place updates
-          NEW_VERSION_CODE=$((200 + ${GITHUB_RUN_NUMBER:-1}))
-          NEW_VERSION_NAME="2.6.${GITHUB_RUN_NUMBER:-1}"
+          NEW_VERSION_CODE=$((300 + ${GITHUB_RUN_NUMBER:-1}))
+          NEW_VERSION_NAME="2.7.${GITHUB_RUN_NUMBER:-1}"
           export FIELDBOOK_VERSION_CODE="$NEW_VERSION_CODE"
           export FIELDBOOK_VERSION_NAME="$NEW_VERSION_NAME"
           echo "Building com.fieldbook.kisan with versionCode=$NEW_VERSION_CODE, versionName=$NEW_VERSION_NAME"
@@ -296,7 +300,7 @@ jobs:
         continue-on-error: true
         with:
           tag_name: latest-apk
-          name: "FieldBook Android App (v2.6.${{ github.run_number }})"
+          name: "FieldBook Android App (v2.7.${{ github.run_number }})"
           fail_on_unmatched_files: false
           files: |
             FieldBook-Kisan-App.apk
